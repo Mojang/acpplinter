@@ -1,3 +1,5 @@
+mod log_output;
+
 use clap::{App, Arg};
 use regex::Regex;
 use serde::Deserialize;
@@ -6,7 +8,6 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
 use std::fs::File;
-use std::io;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -147,12 +148,14 @@ impl fmt::Display for Warnings {
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
 struct ExpectedFailsDesc {
     exactly: u32,
     //TODO greater than and less than?
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 #[allow(non_snake_case)]
 struct TestDesc {
     fail: Vec<String>,
@@ -166,6 +169,7 @@ struct TestDesc {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 #[allow(non_snake_case)]
 struct ConfigDesc {
     roots: Vec<String>,
@@ -175,6 +179,9 @@ struct ConfigDesc {
     removeComments: Option<bool>,
     tests: Vec<TestDesc>,
     safeTag: Option<String>,
+
+    // note: this is unused and it's just there for retrocompatibility
+    incremental: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -418,9 +425,11 @@ fn examine(
     let mut line_number = 0;
 
     let mut file = File::open(&path).unwrap_or_else(|e| {
-        eprintln!("{}: {}", path.display(), e);
+        log::error!("{}: {}", path.display(), e);
         process::exit(1);
     });
+
+    log::debug!("Checking {}", path.display());
 
     let result = file.read_to_string(&mut file_content);
 
@@ -452,8 +461,8 @@ fn examine(
     if sanity_checks {
         if original_lines != file_content.lines().count() {
             output_preprocessed(path, &file_content);
-            eprintln!("Error: lines were lost during preprocessing");
-            eprintln!("File: {}", path.display());
+            log::error!("Error: lines were lost during preprocessing");
+            log::error!("File: {}", path.display());
         }
     }
 
@@ -553,7 +562,7 @@ fn run<W: Write>(
                     paths.push(entry.into_path());
                 }
             } else {
-                eprintln!("Cannot find a folder in the root list: {}", root);
+                log::error!("Cannot find a folder in the root list: {}", root);
                 process::exit(1);
             }
         }
@@ -607,13 +616,16 @@ fn open_output(maybe_path: Option<&str>) -> Box<dyn Write> {
         if let Ok(file) = File::create(path) {
             return Box::new(file);
         }
-        println!("Cannot open file at {}, defaulting to stdout", path);
+        log::warn!("Cannot open file at {}, defaulting to stdout", path);
     }
 
-    return Box::new(io::stdout());
+    return Box::new(log_output::LogOutput);
 }
 
 fn main() {
+    let log_env = env_logger::Env::new().default_filter_or("info");
+    env_logger::init_from_env(log_env);
+
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     let cpu_count = num_cpus::get();
@@ -659,7 +671,7 @@ fn main() {
     let path = PathBuf::from(matches.value_of("JSON_PATH").unwrap());
 
     if !path.is_file() {
-        eprintln!("{} is not a file, or couldn't be found!", path.display());
+        log::error!("{} is not a file, or couldn't be found!", path.display());
         process::exit(1);
     }
 
@@ -682,7 +694,7 @@ fn main() {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(cpu_count);
 
-    println!("Running acpplinter {} with {} threads", VERSION, j);
+    log::info!("Running acpplinter {} with {} threads", VERSION, j);
 
     let mut output = open_output(matches.value_of("output"));
 
@@ -705,13 +717,13 @@ fn main() {
                 }
             }
             Err(e) => {
-                println!("Invalid JSON");
-                println!("{:?}", e);
+                log::error!("Invalid JSON");
+                log::error!("{:?}", e);
                 process::exit(1);
             }
         }
     } else {
-        eprintln!("Cannot open config {}", path.display());
+        log::error!("Cannot open config {}", path.display());
         process::exit(1);
     }
 }
