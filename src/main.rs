@@ -1,6 +1,6 @@
 use clap::{App, Arg};
 use regex::Regex;
-use rustc_serialize::json;
+use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::env;
@@ -146,13 +146,13 @@ impl fmt::Display for Warnings {
     }
 }
 
-#[derive(RustcDecodable, Debug, Clone, Default)]
+#[derive(Deserialize, Debug, Clone, Default)]
 struct ExpectedFailsDesc {
     exactly: u32,
     //TODO greater than and less than?
 }
 
-#[derive(RustcDecodable, Debug)]
+#[derive(Deserialize, Debug)]
 #[allow(non_snake_case)]
 struct TestDesc {
     fail: Vec<String>,
@@ -165,7 +165,7 @@ struct TestDesc {
     expected_fails: Option<ExpectedFailsDesc>,
 }
 
-#[derive(RustcDecodable, Debug)]
+#[derive(Deserialize, Debug)]
 #[allow(non_snake_case)]
 struct ConfigDesc {
     roots: Vec<String>,
@@ -602,7 +602,7 @@ fn run<W: Write>(
     count
 }
 
-fn open_output(maybe_path: Option<&str>) -> Box<Write> {
+fn open_output(maybe_path: Option<&str>) -> Box<dyn Write> {
     if let Some(path) = maybe_path {
         if let Ok(file) = File::create(path) {
             return Box::new(file);
@@ -689,10 +689,7 @@ fn main() {
     if let Ok(mut file) = File::open(path.as_path()) {
         assert!(env::set_current_dir(rootpath).is_ok());
 
-        let mut file_content = String::new();
-        file.read_to_string(&mut file_content).unwrap();
-
-        match json::decode::<ConfigDesc>(file_content.as_ref()) {
+        match serde_json::from_reader(&mut file) {
             Ok(desc) => {
                 if run(
                     Config::from_desc(desc),
