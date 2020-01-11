@@ -26,7 +26,7 @@ fn to_absolute_path(path: &Path) -> Result<PathBuf, std::io::Error> {
     Ok(root)
 }
 
-fn to_single_regex(strings: &Vec<String>) -> Option<Regex> {
+fn to_single_regex(strings: &[String]) -> Option<Regex> {
     if strings.is_empty() {
         return None;
     }
@@ -44,11 +44,11 @@ fn to_single_regex(strings: &Vec<String>) -> Option<Regex> {
 fn to_unix_string(path: &Path) -> Cow<str> {
     let mut string = path.to_string_lossy();
 
-    if let Some(_) = string.as_ref().find('\\') {
+    if string.as_ref().find('\\').is_some() {
         string = Cow::Owned(string.as_ref().replace("\\", "/"));
     }
 
-    return string;
+    string
 }
 
 fn matches_maybe(path: &Path, regex: &Option<Regex>) -> bool {
@@ -92,18 +92,16 @@ impl fmt::Display for Warning {
 
         if let Some(ref blame) = self.blame {
             write!(f, "{}\t\t{}", blame, self.snippet.as_ref().unwrap()) //snippet must exist if there is a blame
+        } else if let Some(ref line) = self.line {
+            write!(
+                f,
+                "{}:{}\t\t{}",
+                self.path.display(),
+                line,
+                self.snippet.as_ref().unwrap() //snippet must exist if there is a line
+            )
         } else {
-            if let Some(ref line) = self.line {
-                write!(
-                    f,
-                    "{}:{}\t\t{}",
-                    self.path.display(),
-                    line,
-                    self.snippet.as_ref().unwrap() //snippet must exist if there is a line
-                )
-            } else {
-                write!(f, "{}", self.path.display())
-            }
+            write!(f, "{}", self.path.display())
         }
     }
 }
@@ -137,10 +135,10 @@ impl Warnings {
 impl fmt::Display for Warnings {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for (k, v) in &self.map {
-            write!(f, "\n#### {}\n\n", k).unwrap();
+            writeln!(f, "\n#### {}\n", k).unwrap();
 
             for warning in v {
-                write!(f, "{}\n", warning).unwrap();
+                writeln!(f, "{}", warning).unwrap();
             }
         }
         Ok(())
@@ -221,7 +219,8 @@ impl Test {
         if matches_maybe(path, &self.exclude_paths) {
             return false;
         }
-        return true;
+
+        true
     }
 
     fn run(&self, line: &str, header: bool, class: bool) -> bool {
@@ -262,11 +261,7 @@ impl Config {
             includes: to_single_regex(&desc.includes.unwrap_or_default()),
             remove_strings: desc.removeStrings.unwrap_or(true),
             remove_comments: desc.removeComments.unwrap_or(true),
-            tests: desc
-                .tests
-                .into_iter()
-                .map(|td| Test::from_desc(td))
-                .collect(),
+            tests: desc.tests.into_iter().map(Test::from_desc).collect(),
             safe_tag_regex: Regex::new(".*/\\*safe\\*/.*(\\r\\n|\\r|\\n)").unwrap(),
             class_regex: Regex::new("(^|\\s)+class\\s+[^;]*$").unwrap(),
         }
@@ -278,7 +273,7 @@ impl Config {
 }
 
 fn is_newline(c: u8) -> bool {
-    c == '\n' as u8 || c == '\r' as u8
+    c == b'\n' || c == b'\r'
 }
 
 fn lookahead_delim(bytes: &[u8], delim: &[u8], start_idx: usize) -> bool {
@@ -298,13 +293,13 @@ fn remove_raw_string_literal(bytes: &mut [u8], start_idx: usize) -> usize {
     while idx < bytes.len() {
         let c = bytes[idx];
         idx += 1;
-        if c == '(' as u8 {
+        if c == b'(' {
             break;
         }
         delim.push(c);
     }
-    delim.push(')' as u8);
-    delim.push('\"' as u8);
+    delim.push(b')');
+    delim.push(b'\"');
 
     //now keep going and find the first position where the delimiter starts
     while idx < bytes.len() - delim.len() + 1 {
@@ -312,7 +307,7 @@ fn remove_raw_string_literal(bytes: &mut [u8], start_idx: usize) -> usize {
             idx += delim.len();
             break;
         } else if !is_newline(bytes[idx]) {
-            bytes[idx] = 'X' as u8;
+            bytes[idx] = b'X';
         }
         idx += 1;
     }
@@ -321,12 +316,12 @@ fn remove_raw_string_literal(bytes: &mut [u8], start_idx: usize) -> usize {
 }
 
 fn clean_cpp_file_content(config: &Config, file_content: &mut String, ignore_safe: bool) {
-    assert!(file_content.len() > 0);
+    assert!(!file_content.is_empty());
 
     //remove all lines containing a safe tag
     if !ignore_safe {
         if let Cow::Owned(modified) = config.safe_tag_regex.replace_all(&file_content, "\n") {
-            *file_content = modified.to_owned();
+            *file_content = modified;
         }
     }
 
@@ -349,16 +344,16 @@ fn clean_cpp_file_content(config: &Config, file_content: &mut String, ignore_saf
             let next = bytes[i + 1];
 
             state = match state {
-                State::Code if config.remove_comments && cur == '/' as u8 && next == '/' as u8 => {
+                State::Code if config.remove_comments && cur == b'/' && next == b'/' => {
                     State::SkipLine
                 }
-                State::Code if config.remove_strings && cur == '"' as u8 => State::String,
-                State::Code if config.remove_strings && cur == '\'' as u8 => State::Char,
-                State::Code if config.remove_comments && cur == '/' as u8 && next == '*' as u8 => {
+                State::Code if config.remove_strings && cur == b'"' => State::String,
+                State::Code if config.remove_strings && cur == b'\'' => State::Char,
+                State::Code if config.remove_comments && cur == b'/' && next == b'*' => {
                     State::MultiLine
                 }
-                State::Code if cur == '#' as u8 => State::Preprocessor,
-                State::Code if cur == 'R' as u8 && next == '"' as u8 => {
+                State::Code if cur == b'#' => State::Preprocessor,
+                State::Code if cur == b'R' && next == b'"' => {
                     i = remove_raw_string_literal(bytes, i + 2);
                     State::Code
                 }
@@ -373,26 +368,26 @@ fn clean_cpp_file_content(config: &Config, file_content: &mut String, ignore_saf
                 //after this line, all iterations on one of these states cause X to be written in replacement
                 State::SkipLine if is_newline(next) => State::Code,
                 State::String if is_newline(cur) => State::String,
-                State::String if cur == '\\' as u8 => {
+                State::String if cur == b'\\' => {
                     //escape char, skip next
-                    bytes[i] = 'X' as u8;
+                    bytes[i] = b'X';
                     i += 1;
                     State::String
                 }
-                State::String if cur == '"' as u8 => State::Code,
+                State::String if cur == b'"' => State::Code,
 
-                State::Char if cur == '\\' as u8 => {
+                State::Char if cur == b'\\' => {
                     //escape char, skip next
-                    bytes[i] = 'X' as u8;
+                    bytes[i] = b'X';
                     i += 1;
                     State::Char
                 }
-                State::Char if cur == '\'' as u8 => State::Code,
+                State::Char if cur == b'\'' => State::Code,
 
-                State::MultiLine if cur == '*' as u8 && next == '/' as u8 => State::Code,
+                State::MultiLine if cur == b'*' && next == b'/' => State::Code,
                 State::MultiLine if is_newline(cur) => State::MultiLine,
                 _ => {
-                    bytes[i] = 'X' as u8;
+                    bytes[i] = b'X';
                     state
                 }
             };
@@ -406,7 +401,7 @@ fn output_preprocessed(path: &Path, file_content: &str) {
     // let out_path = append_to_extension(path.to_owned(), ".preproc");
     let out_path = path;
     let mut outfile = File::create(out_path).unwrap();
-    outfile.write(file_content.as_bytes()).unwrap();
+    outfile.write_all(file_content.as_bytes()).unwrap();
 }
 
 fn examine(
@@ -458,12 +453,10 @@ fn examine(
     // TODO ensure stuff is ASCII manually
     clean_cpp_file_content(config, &mut file_content, ignore_safe);
 
-    if sanity_checks {
-        if original_lines != file_content.lines().count() {
-            output_preprocessed(path, &file_content);
-            log::error!("Error: lines were lost during preprocessing");
-            log::error!("File: {}", path.display());
-        }
+    if sanity_checks && original_lines != file_content.lines().count() {
+        output_preprocessed(path, &file_content);
+        log::error!("Error: lines were lost during preprocessing");
+        log::error!("File: {}", path.display());
     }
 
     if replace_original_with_preprocessed {
@@ -532,7 +525,7 @@ fn examine(
 
             let lines: Vec<&str> = file_content.split('\n').collect();
 
-            for (_, list) in &mut warnings.map {
+            for list in warnings.map.values_mut() {
                 for w in list {
                     if let Some(line) = w.line {
                         w.blame = Some(lines[line].to_owned());
@@ -619,14 +612,14 @@ fn open_output(maybe_path: Option<&str>) -> Box<dyn Write> {
         log::warn!("Cannot open file at {}, defaulting to stdout", path);
     }
 
-    return Box::new(log_output::LogOutput);
+    Box::new(log_output::LogOutput)
 }
 
 fn main() {
     let log_env = env_logger::Env::new().default_filter_or("info");
     env_logger::init_from_env(log_env);
 
-    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
 
     let cpu_count = num_cpus::get();
     let cpu_num_string = cpu_count.to_string();
