@@ -1,18 +1,18 @@
 mod log_output;
 
+use async_std::fs::File;
+use async_std::io::prelude::*;
 use clap::{App, Arg};
+use futures::future;
 use regex::Regex;
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::env;
 use std::fmt;
-use std::fs::File;
-use std::io::prelude::*;
+use std::fs::File as SyncFile;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::mpsc;
-use threadpool::ThreadPool;
 use walkdir::WalkDir;
 
 fn to_absolute_path(path: &Path) -> Result<PathBuf, std::io::Error> {
@@ -108,7 +108,7 @@ impl fmt::Display for Warning {
 
 #[derive(Default)]
 struct Warnings {
-    map: BTreeMap<String, Vec<Warning>>,
+    map: HashMap<String, Vec<Warning>>,
 }
 
 impl Warnings {
@@ -396,15 +396,16 @@ fn clean_cpp_file_content(config: &Config, file_content: &mut String, ignore_saf
     }
 }
 
-fn output_preprocessed(path: &Path, file_content: &str) {
+async fn output_preprocessed(path: &Path, file_content: &str) {
     // debug option: print out whatever this file looks like after cleaning
     // let out_path = append_to_extension(path.to_owned(), ".preproc");
     let out_path = path;
-    let mut outfile = File::create(out_path).unwrap();
-    outfile.write_all(file_content.as_bytes()).unwrap();
+    let mut outfile = File::create(out_path).await.unwrap();
+    outfile.write_all(file_content.as_bytes()).await.unwrap();
 }
 
-fn examine(
+#[allow(clippy::cognitive_complexity)]
+async fn examine(
     config: &Config,
     path: &Path,
     replace_original_with_preprocessed: bool,
@@ -419,14 +420,14 @@ fn examine(
     let in_header = path.ends_with(".h");
     let mut line_number = 0;
 
-    let mut file = File::open(&path).unwrap_or_else(|e| {
+    let mut file = File::open(&path).await.unwrap_or_else(|e| {
         log::error!("{}: {}", path.display(), e);
         process::exit(1);
     });
 
     log::debug!("Checking {}", path.display());
 
-    let result = file.read_to_string(&mut file_content);
+    let result = file.read_to_string(&mut file_content).await;
 
     if result.is_err() {
         warnings.add(
@@ -454,13 +455,13 @@ fn examine(
     clean_cpp_file_content(config, &mut file_content, ignore_safe);
 
     if sanity_checks && original_lines != file_content.lines().count() {
-        output_preprocessed(path, &file_content);
+        output_preprocessed(path, &file_content).await;
         log::error!("Error: lines were lost during preprocessing");
         log::error!("File: {}", path.display());
     }
 
     if replace_original_with_preprocessed {
-        output_preprocessed(path, &file_content);
+        output_preprocessed(path, &file_content).await;
     }
 
     let mut test_batch = vec![];
@@ -519,9 +520,9 @@ fn examine(
     // in which case, attach the blame information to the warnings
     if warnings.len() > 0 {
         let blame_path = path.to_str().unwrap().to_owned() + ".blame";
-        if let Ok(mut file) = File::open(blame_path) {
+        if let Ok(mut file) = File::open(blame_path).await {
             file_content.clear();
-            file.read_to_string(&mut file_content).unwrap();
+            file.read_to_string(&mut file_content).await.unwrap();
 
             let lines: Vec<&str> = file_content.split('\n').collect();
 
@@ -538,15 +539,16 @@ fn examine(
     warnings
 }
 
-fn run<W: Write>(
+async fn run<W>(
     config: Config,
     output: &mut W,
     replace_original_with_preprocessed: bool,
     ignore_safe: bool,
-    j: usize,
-) -> usize {
+) -> usize
+where
+    W: std::io::Write + Unpin,
+{
     let mut paths: Vec<PathBuf> = vec![];
-    let pool = ThreadPool::new(j);
 
     for root in &config.roots {
         for entry in WalkDir::new(root) {
@@ -561,38 +563,35 @@ fn run<W: Write>(
         }
     }
 
-    let (sender, receiver) = mpsc::channel();
-
     let sanity_checks = false;
 
-    let mut task_count = 0;
+    let mut results = vec![];
+
     for path in paths {
         if config.should_check(&path) {
-            task_count += 1;
             let config = config.clone();
-            let sender = sender.clone();
 
-            pool.execute(move || {
-                sender
-                    .send(examine(
-                        &config,
-                        &path,
-                        replace_original_with_preprocessed,
-                        ignore_safe,
-                        sanity_checks,
-                    ))
-                    .unwrap();
+            let result = async_std::task::spawn(async move {
+                examine(
+                    &config,
+                    &path,
+                    replace_original_with_preprocessed,
+                    ignore_safe,
+                    sanity_checks,
+                )
+                .await
             });
+
+            results.push(result);
         }
     }
 
-    let warnings = receiver
-        .iter()
-        .take(task_count)
-        .fold(Warnings::default(), |mut w, cur| {
-            w.add_map(cur);
-            w
-        });
+    let mut warnings = Warnings::default();
+
+    // accumulate all warnings in the same map
+    for result in future::join_all(results.into_iter()).await {
+        warnings.add_map(result);
+    }
 
     let count = warnings.map.iter().fold(0, |c, (_, v)| c + v.len());
     write!(output, "{}", warnings).unwrap();
@@ -604,9 +603,9 @@ fn run<W: Write>(
     count
 }
 
-fn open_output(maybe_path: Option<&str>) -> Box<dyn Write> {
+fn open_output(maybe_path: Option<&str>) -> Box<dyn std::io::Write> {
     if let Some(path) = maybe_path {
-        if let Ok(file) = File::create(path) {
+        if let Ok(file) = SyncFile::create(path) {
             return Box::new(file);
         }
         log::warn!("Cannot open file at {}, defaulting to stdout", path);
@@ -615,14 +614,8 @@ fn open_output(maybe_path: Option<&str>) -> Box<dyn Write> {
     Box::new(log_output::LogOutput)
 }
 
-fn main() {
-    let log_env = env_logger::Env::new().default_filter_or("info");
-    env_logger::init_from_env(log_env);
-
+async fn async_main() {
     const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-    let cpu_count = num_cpus::get();
-    let cpu_num_string = cpu_count.to_string();
 
     let matches = App::new("A cpp linter")
         .version(VERSION)
@@ -652,13 +645,6 @@ fn main() {
         .arg(Arg::with_name("ignore-safe")
             .help("Ignore /*safe*/ tags and show them anyway in the output")
             .long("ignore-safe"))
-        .arg(Arg::with_name("job-count")
-            .help("Override how many threads should be used")
-            .value_name("Job count")
-            .long("job-count")
-            .short("j")
-            .takes_value(true)
-            .default_value(&cpu_num_string))
         .get_matches();
 
     let path = PathBuf::from(matches.value_of("JSON_PATH").unwrap());
@@ -682,16 +668,11 @@ fn main() {
 
     let ignore_safe = matches.is_present("ignore-safe");
 
-    let j = matches
-        .value_of("job-count")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(cpu_count);
-
-    log::info!("Running acpplinter {} with {} threads", VERSION, j);
+    log::info!("Running acpplinter {}", VERSION);
 
     let mut output = open_output(matches.value_of("output"));
 
-    if let Ok(mut file) = File::open(path.as_path()) {
+    if let Ok(mut file) = SyncFile::open(path.as_path()) {
         assert!(env::set_current_dir(rootpath).is_ok());
 
         match serde_json::from_reader(&mut file) {
@@ -701,8 +682,9 @@ fn main() {
                     &mut output,
                     replace_original_with_preprocessed,
                     ignore_safe,
-                    j,
-                ) == 0
+                )
+                .await
+                    == 0
                 {
                     process::exit(0);
                 } else {
@@ -719,4 +701,11 @@ fn main() {
         log::error!("Cannot open config {}", path.display());
         process::exit(1);
     }
+}
+
+fn main() {
+    let log_env = env_logger::Env::new().default_filter_or("info");
+    env_logger::init_from_env(log_env);
+
+    async_std::task::block_on(async_main())
 }
