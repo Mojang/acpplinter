@@ -1,12 +1,13 @@
 [package]
 name = "acpplinter"
-version = "0.7.4"
+version = "0.7.6"
 authors = ["Tommaso Checchi <tommaso.checchi1@gmail.com>"]
 edition = "2018"
 
 [dependencies]
 async-std = "1.4"
 clap = "2.33"
+dunce = "1.0.2"
 env_logger = "0.7"
 futures = "0.3"
 log = "0.4"
