@@ -88,15 +88,13 @@ impl Warning {
 
 impl fmt::Display for Warning {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "\t")?;
-
         if let Some(ref blame) = self.blame {
             write!(f, "{}\t\t{}", blame, self.snippet.as_ref().unwrap()) //snippet must exist if there is a blame
         } else if let Some(ref line) = self.line {
             write!(
                 f,
-                "{}:{}\t\t{}",
-                self.path.display(),
+                "{}({}): error :\t\t{}",
+                dunce::canonicalize(&self.path).unwrap().display(),
                 line,
                 self.snippet.as_ref().unwrap() //snippet must exist if there is a line
             )
@@ -135,7 +133,7 @@ impl Warnings {
 impl fmt::Display for Warnings {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for (k, v) in &self.map {
-            writeln!(f, "\n#### {}\n", k).unwrap();
+            writeln!(f, "\nLinter: error : #### {}\n", k).unwrap();
 
             for warning in v {
                 writeln!(f, "{}", warning).unwrap();
@@ -645,6 +643,9 @@ async fn async_main() {
         .arg(Arg::with_name("ignore-safe")
             .help("Ignore /*safe*/ tags and show them anyway in the output")
             .long("ignore-safe"))
+        .arg(Arg::with_name("vs-log")
+            .help("Use Visual Studio log style to show individual clickable errors in the Visual Studio output")
+            .long("vs-log"))
         .get_matches();
 
     let path = PathBuf::from(matches.value_of("JSON_PATH").unwrap());
@@ -667,6 +668,35 @@ async fn async_main() {
         matches.is_present("replace-original-with-preprocessed");
 
     let ignore_safe = matches.is_present("ignore-safe");
+
+    let vs_log = matches.is_present("vs-log");
+
+    //log format
+    if vs_log {
+        log::error!("testing:error:desc");
+        use std::io::Write;
+        use env_logger::{Builder, Env};
+        fn init_logger() {
+            let env = Env::new()
+                .default_filter_or("info");
+            Builder::from_env(env)
+                .format(|buf, record| {
+                    let mut style = buf.style();
+
+                    writeln!(
+                        buf,
+                        "{}",
+                        style.value(record.args())
+                    )
+                })
+                .init();
+        }
+        init_logger();
+    } else {
+        let log_env = env_logger::Env::new().default_filter_or("info");
+        env_logger::init_from_env(log_env);
+    }
+    //end log format
 
     log::info!("Running acpplinter {}", VERSION);
 
@@ -704,8 +734,5 @@ async fn async_main() {
 }
 
 fn main() {
-    let log_env = env_logger::Env::new().default_filter_or("info");
-    env_logger::init_from_env(log_env);
-
     async_std::task::block_on(async_main())
 }
