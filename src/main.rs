@@ -260,7 +260,7 @@ impl Config {
             remove_strings: desc.removeStrings.unwrap_or(true),
             remove_comments: desc.removeComments.unwrap_or(true),
             tests: desc.tests.into_iter().map(Test::from_desc).collect(),
-            safe_tag_regex: Regex::new(".*/\\*safe\\*/.*(\\r\\n|\\r|\\n)").unwrap(),
+            safe_tag_regex: Regex::new(".*/\\*\\s*safe\\s*\\*/.*(\\r\\n|\\r|\\n)").unwrap(),
             class_regex: Regex::new("(^|\\s)+class\\s+[^;]*$").unwrap(),
         }
     }
