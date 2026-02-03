@@ -29,6 +29,7 @@ acpplinter <config.json> [OPTIONS]
 | `-o, --output <file>` | Output file path (defaults to stdout) |
 | `--ignore-safe` | Ignore `/*safe*/` tags and show all warnings |
 | `--vs-log` | Use Visual Studio-compatible log format |
+| `--json-log <file>` | Output warnings as structured JSON to the specified file |
 | `--replace-original-with-preprocessed` | Debug option to see preprocessed files |
 
 ### Example
