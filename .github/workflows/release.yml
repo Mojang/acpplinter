@@ -42,12 +42,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build release
-        run: cargo build --release
-
-      - name: Package artifact
-        run: Compress-Archive -Path target/release/acpplinter.exe -DestinationPath acpplinter.zip
-
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
