@@ -1,0 +1,24 @@
+{
+  "branches": ["master"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "pwsh -Command \"(Get-Content Cargo.toml) -replace 'version = \\\"[0-9]+\\.[0-9]+\\.[0-9]+\\\"', 'version = \\\"${nextRelease.version}\\\"' | Set-Content Cargo.toml\""
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          {
+            "path": "acpplinter.zip",
+            "label": "acpplinter.zip"
+          }
+        ]
+      }
+    ]
+  ]
+}

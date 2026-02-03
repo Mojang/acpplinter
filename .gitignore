@@ -2,3 +2,4 @@ target/
 *.VC.db
 .vscode/*
 /Cargo.lock
+node_modules/
