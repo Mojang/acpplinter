@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 thread_local! {
-    pub static LOG_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![]);
+    pub static LOG_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(vec![]) };
 }
 
 pub struct LogOutput;
@@ -12,7 +12,7 @@ impl std::io::Write for LogOutput {
             b.borrow_mut().extend_from_slice(buf);
 
             // only actually write out if a newline is received
-            if b.borrow().last().cloned() == Some('\n' as u8) {
+            if b.borrow().last().cloned() == Some(b'\n') {
                 // remove newline
                 b.borrow_mut().pop();
 

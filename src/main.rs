@@ -78,10 +78,7 @@ impl Warning {
             path: info.path.clone(),
             line: info.line,
             blame: None,
-            snippet: match info.snippet {
-                Some(snippet) => Some(snippet.to_owned()),
-                None => None,
-            },
+            snippet: info.snippet.map(|snippet| snippet.to_owned()),
         }
     }
 }
@@ -121,7 +118,7 @@ impl Warnings {
 
     fn add_map(&mut self, other: Warnings) {
         for (k, mut v) in other.map {
-            self.map.entry(k).or_insert_with(Vec::new).append(&mut v);
+            self.map.entry(k).or_default().append(&mut v);
         }
     }
 
@@ -304,7 +301,7 @@ impl Config {
     }
 
     fn should_check(&self, path: &Path) -> bool {
-        matches_maybe(&path, &self.includes) && !matches_maybe(&path, &self.excludes)
+        matches_maybe(path, &self.includes) && !matches_maybe(path, &self.excludes)
     }
 }
 
@@ -356,7 +353,7 @@ fn clean_cpp_file_content(config: &Config, file_content: &mut String, ignore_saf
 
     //remove all lines containing a safe tag
     if !ignore_safe {
-        if let Cow::Owned(modified) = config.safe_tag_regex.replace_all(&file_content, "\n") {
+        if let Cow::Owned(modified) = config.safe_tag_regex.replace_all(file_content, "\n") {
             *file_content = modified;
         }
     }
@@ -453,7 +450,7 @@ async fn examine(
     let mut file_content = String::new();
 
     let mut in_class = false;
-    let in_header = path.ends_with(".h");
+    let in_header = path.extension().is_some_and(|ext| ext == "h");
     let mut line_number = 0;
 
     let mut file = File::open(&path).await.unwrap_or_else(|e| {
@@ -504,7 +501,7 @@ async fn examine(
 
     //select all tests that should run on this file
     for test in &config.tests {
-        if test.runs_on_path(&path) {
+        if test.runs_on_path(path) {
             test_batch.push(test);
         }
     }
