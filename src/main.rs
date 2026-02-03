@@ -41,7 +41,7 @@ fn to_single_regex(strings: &[String]) -> Option<Regex> {
     Some(Regex::new(&full_regex_string).unwrap())
 }
 
-fn to_unix_string(path: &Path) -> Cow<str> {
+fn to_unix_string(path: &Path) -> Cow<'_, str> {
     let mut string = path.to_string_lossy();
 
     if string.as_ref().find('\\').is_some() {
@@ -204,6 +204,7 @@ struct TestDesc {
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 #[allow(non_snake_case)]
+#[allow(dead_code)]
 struct ConfigDesc {
     roots: Vec<String>,
     excludes: Option<Vec<String>>,
@@ -748,7 +749,7 @@ async fn async_main() {
                 .default_filter_or("info");
             Builder::from_env(env)
                 .format(|buf, record| {
-                    let mut style = buf.style();
+                    let style = buf.style();
 
                     writeln!(
                         buf,
