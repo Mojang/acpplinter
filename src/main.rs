@@ -5,7 +5,7 @@ use async_std::io::prelude::*;
 use clap::{App, Arg};
 use futures::future;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
@@ -64,7 +64,7 @@ struct Info<'a> {
     snippet: Option<&'a str>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct Warning {
     path: PathBuf,
     line: Option<usize>,
@@ -140,6 +140,43 @@ impl fmt::Display for Warnings {
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Serialize)]
+struct JsonWarning {
+    error: String,
+    path: PathBuf,
+    line: Option<usize>,
+    snippet: Option<String>,
+    blame: Option<String>,
+}
+
+#[derive(Serialize)]
+struct JsonOutput {
+    total_issues: usize,
+    warnings: Vec<JsonWarning>,
+}
+
+impl Warnings {
+    fn to_json(&self) -> String {
+        let mut json_warnings = Vec::new();
+        for (error, warnings) in &self.map {
+            for w in warnings {
+                json_warnings.push(JsonWarning {
+                    error: error.clone(),
+                    path: w.path.clone(),
+                    line: w.line,
+                    snippet: w.snippet.clone(),
+                    blame: w.blame.clone(),
+                });
+            }
+        }
+        let output = JsonOutput {
+            total_issues: json_warnings.len(),
+            warnings: json_warnings,
+        };
+        serde_json::to_string_pretty(&output).unwrap()
     }
 }
 
@@ -542,6 +579,7 @@ async fn run<W>(
     output: &mut W,
     replace_original_with_preprocessed: bool,
     ignore_safe: bool,
+    json_log_path: Option<&Path>,
 ) -> usize
 where
     W: std::io::Write + Unpin,
@@ -592,6 +630,21 @@ where
     }
 
     let count = warnings.map.iter().fold(0, |c, (_, v)| c + v.len());
+    
+    if let Some(json_path) = json_log_path {
+        let json_output = warnings.to_json();
+        match SyncFile::create(json_path) {
+            Ok(mut json_file) => {
+                use std::io::Write;
+                writeln!(json_file, "{}", json_output).unwrap();
+                log::info!("JSON output written to {}", json_path.display());
+            }
+            Err(e) => {
+                log::error!("Cannot create JSON output file {}: {}", json_path.display(), e);
+            }
+        }
+    }
+    
     write!(output, "{}", warnings).unwrap();
     if count == 1 {
         writeln!(output, "Found 1 issue!").unwrap();
@@ -646,6 +699,11 @@ async fn async_main() {
         .arg(Arg::with_name("vs-log")
             .help("Use Visual Studio log style to show individual clickable errors in the Visual Studio output")
             .long("vs-log"))
+        .arg(Arg::with_name("json-log")
+            .help("Output warnings as structured JSON to the specified file")
+            .value_name("JSON output file")
+            .long("json-log")
+            .takes_value(true))
         .get_matches();
 
     let path = PathBuf::from(matches.value_of("JSON_PATH").unwrap());
@@ -670,6 +728,15 @@ async fn async_main() {
     let ignore_safe = matches.is_present("ignore-safe");
 
     let vs_log = matches.is_present("vs-log");
+
+    let json_log_path = matches.value_of("json-log").map(|p| {
+        let path = Path::new(p);
+        if path.is_absolute() {
+            PathBuf::from(p)
+        } else {
+            std::env::current_dir().unwrap().join(path)
+        }
+    });
 
     //log format
     if vs_log {
@@ -712,6 +779,7 @@ async fn async_main() {
                     &mut output,
                     replace_original_with_preprocessed,
                     ignore_safe,
+                    json_log_path.as_deref(),
                 )
                 .await
                     == 0
