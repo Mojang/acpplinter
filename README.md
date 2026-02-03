@@ -96,6 +96,33 @@ Each test rule supports:
 - `0`: No issues found
 - `1`: Issues found or error occurred
 
+## Releases
+
+This project uses [semantic-release](https://semantic-release.gitbook.io/) for automated versioning and GitHub releases.
+
+### How It Works
+
+1. Push commits to the `master` branch
+2. semantic-release analyzes commit messages to determine the next version
+3. A Windows build is created and packaged as `acpplinter.zip`
+4. A GitHub release is published with the zip artifact
+
+### Commit Message Format
+
+Commits must follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+| Commit Type | Version Bump | Example |
+|-------------|--------------|---------|
+| `fix:` | Patch (0.0.x) | `fix: handle empty config file` |
+| `feat:` | Minor (0.x.0) | `feat: add JSON output format` |
+| `feat!:` or `BREAKING CHANGE:` | Major (x.0.0) | `feat!: change config schema` |
+
+Other prefixes like `docs:`, `chore:`, `ci:`, `refactor:`, `test:` do not trigger a release.
+
+### Downloading
+
+Pre-built Windows binaries are available on the [Releases](../../releases) page. Download `acpplinter.zip` and extract `acpplinter.exe`.
+
 ## License
 
 MIT
