@@ -35,7 +35,7 @@ acpplinter <config.json> [OPTIONS]
 ### Example
 
 ```bash
-acpplinter example.json -r ./src -o output.txt
+acpplinter example.json -r ./src
 ```
 
 ## Configuration
