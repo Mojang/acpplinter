@@ -186,6 +186,17 @@ struct ExpectedFailsDesc {
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
+struct FileLimitDesc {
+    max_bytes: Option<u64>,
+    max_lines: Option<u64>,
+    max_bytes_error: Option<String>,
+    max_lines_error: Option<String>,
+    include_paths: Option<Vec<String>>,
+    exclude_paths: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 #[allow(non_snake_case)]
 struct TestDesc {
     fail: Vec<String>,
@@ -210,6 +221,7 @@ struct ConfigDesc {
     removeComments: Option<bool>,
     tests: Vec<TestDesc>,
     safeTag: Option<String>,
+    fileLimits: Option<Vec<FileLimitDesc>>,
 
     // note: this is unused and it's just there for retrocompatibility
     incremental: Option<bool>,
@@ -274,6 +286,45 @@ impl Test {
 }
 
 #[derive(Clone)]
+struct FileLimit {
+    max_bytes: Option<u64>,
+    max_lines: Option<u64>,
+    max_bytes_error: Option<String>,
+    max_lines_error: Option<String>,
+    include_paths: Option<Regex>,
+    exclude_paths: Option<Regex>,
+}
+
+impl FileLimit {
+    fn from_desc(desc: FileLimitDesc) -> Self {
+        FileLimit {
+            max_bytes: desc.max_bytes,
+            max_lines: desc.max_lines,
+            max_bytes_error: desc.max_bytes_error,
+            max_lines_error: desc.max_lines_error,
+            include_paths: to_single_regex(&desc.include_paths.unwrap_or_default()),
+            exclude_paths: to_single_regex(&desc.exclude_paths.unwrap_or_default()),
+        }
+    }
+
+    fn runs_on_path(&self, path: &Path) -> bool {
+        if self.include_paths.is_some() && !matches_maybe(path, &self.include_paths) {
+            return false;
+        }
+
+        !matches_maybe(path, &self.exclude_paths)
+    }
+
+    fn max_bytes_exceeded(&self, bytes: Option<u64>) -> bool {
+        bytes.is_some_and(|bytes| self.max_bytes.is_some_and(|maximum| bytes > maximum))
+    }
+
+    fn max_lines_exceeded(&self, lines: Option<u64>) -> bool {
+        lines.is_some_and(|lines| self.max_lines.is_some_and(|maximum| lines > maximum))
+    }
+}
+
+#[derive(Clone)]
 struct Config {
     roots: Vec<String>,
     excludes: Option<Regex>,
@@ -281,6 +332,7 @@ struct Config {
     remove_strings: bool,
     remove_comments: bool,
     tests: Vec<Test>,
+    file_limits: Vec<FileLimit>,
     safe_tag_regex: Regex,
 
     class_regex: Regex,
@@ -295,6 +347,12 @@ impl Config {
             remove_strings: desc.removeStrings.unwrap_or(true),
             remove_comments: desc.removeComments.unwrap_or(true),
             tests: desc.tests.into_iter().map(Test::from_desc).collect(),
+            file_limits: desc
+                .fileLimits
+                .unwrap_or_default()
+                .into_iter()
+                .map(FileLimit::from_desc)
+                .collect(),
             safe_tag_regex: Regex::new(".*/\\*\\s*safe\\s*\\*/.*(\\r\\n|\\r|\\n)").unwrap(),
             class_regex: Regex::new("(^|\\s)+class\\s+[^;]*$").unwrap(),
         }
@@ -307,6 +365,14 @@ impl Config {
 
 fn is_newline(c: u8) -> bool {
     c == b'\n' || c == b'\r'
+}
+
+fn count_lines(file_content: &str) -> usize {
+    if file_content.is_empty() {
+        return 0;
+    }
+
+    memchr::memchr_iter(b'\n', file_content.as_bytes()).count()
 }
 
 fn lookahead_delim(bytes: &[u8], delim: &[u8], start_idx: usize) -> bool {
@@ -437,6 +503,38 @@ async fn output_preprocessed(path: &Path, file_content: &str) {
     outfile.write_all(file_content.as_bytes()).await.unwrap();
 }
 
+fn add_file_limit_warnings(
+    config: &Config,
+    path: &Path,
+    bytes: Option<u64>,
+    lines: Option<u64>,
+    warnings: &mut Warnings,
+) {
+    let info = Info {
+        path: path.to_path_buf(),
+        line: None,
+        snippet: None,
+    };
+
+    for limit in &config.file_limits {
+        if !limit.runs_on_path(path) {
+            continue;
+        }
+
+        if limit.max_bytes_exceeded(bytes) {
+            if let Some(error) = &limit.max_bytes_error {
+                warnings.add(error, &info);
+            }
+        }
+
+        if limit.max_lines_exceeded(lines) {
+            if let Some(error) = &limit.max_lines_error {
+                warnings.add(error, &info);
+            }
+        }
+    }
+}
+
 #[allow(clippy::cognitive_complexity)]
 async fn examine(
     config: &Config,
@@ -457,12 +555,14 @@ async fn examine(
         log::error!("{}: {}", path.display(), e);
         process::exit(1);
     });
+    let file_size = file.metadata().await.ok().map(|metadata| metadata.len());
 
     log::debug!("Checking {}", path.display());
 
     let result = file.read_to_string(&mut file_content).await;
 
     if result.is_err() {
+        add_file_limit_warnings(config, path, file_size, None, &mut warnings);
         warnings.add(
             "This file contains invalid UTF8",
             &Info {
@@ -474,12 +574,15 @@ async fn examine(
         return warnings;
     }
 
+    let line_count = count_lines(&file_content) as u64;
+    add_file_limit_warnings(config, path, file_size, Some(line_count), &mut warnings);
+
     if file_content.len() <= 1 {
         return warnings;
     }
 
     let original_lines = if sanity_checks {
-        file_content.lines().count()
+        count_lines(&file_content)
     } else {
         0
     };
@@ -487,7 +590,7 @@ async fn examine(
     // TODO ensure stuff is ASCII manually
     clean_cpp_file_content(config, &mut file_content, ignore_safe);
 
-    if sanity_checks && original_lines != file_content.lines().count() {
+    if sanity_checks && original_lines != count_lines(&file_content) {
         output_preprocessed(path, &file_content).await;
         log::error!("Error: lines were lost during preprocessing");
         log::error!("File: {}", path.display());
@@ -623,7 +726,7 @@ where
     let mut warnings = Warnings::default();
 
     // accumulate all warnings in the same map
-    for result in future::join_all(results.into_iter()).await {
+    for result in future::join_all(results).await {
         warnings.add_map(result);
     }
 
@@ -801,4 +904,114 @@ async fn async_main() {
 
 fn main() {
     async_std::task::block_on(async_main())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file_limit(max_bytes: Option<u64>, max_lines: Option<u64>) -> FileLimit {
+        FileLimit::from_desc(FileLimitDesc {
+            max_bytes,
+            max_lines,
+            max_bytes_error: Some("File has too many bytes".to_owned()),
+            max_lines_error: Some("File has too many lines".to_owned()),
+            include_paths: None,
+            exclude_paths: None,
+        })
+    }
+
+    #[test]
+    fn file_limit_allows_values_at_thresholds() {
+        let limit = file_limit(Some(100), Some(10));
+
+        assert!(!limit.max_bytes_exceeded(Some(100)));
+        assert!(!limit.max_lines_exceeded(Some(10)));
+        assert!(!limit.max_bytes_exceeded(None));
+        assert!(!limit.max_lines_exceeded(None));
+    }
+
+    #[test]
+    fn count_lines_ignores_unterminated_final_line() {
+        let cases = [
+            ("", 0),
+            ("one", 0),
+            ("one\n", 1),
+            ("\n", 1),
+            ("\n\n", 2),
+            ("one\ntwo", 1),
+            ("one\r\ntwo\r\n", 2),
+            ("one\rtwo", 0),
+        ];
+
+        for (file_content, expected) in cases {
+            assert_eq!(count_lines(file_content), expected);
+        }
+    }
+
+    #[test]
+    fn file_limit_rejects_bytes_or_lines_above_thresholds() {
+        let limit = file_limit(Some(100), Some(10));
+
+        assert!(limit.max_bytes_exceeded(Some(101)));
+        assert!(limit.max_lines_exceeded(Some(11)));
+    }
+
+    #[test]
+    fn file_limit_honors_path_filters() {
+        let limit = FileLimit::from_desc(FileLimitDesc {
+            max_bytes: None,
+            max_lines: Some(10),
+            max_bytes_error: None,
+            max_lines_error: Some("File has too many lines".to_owned()),
+            include_paths: Some(vec!["\\.cpp$".to_owned()]),
+            exclude_paths: Some(vec!["generated".to_owned()]),
+        });
+
+        assert!(limit.runs_on_path(Path::new("src/example.cpp")));
+        assert!(!limit.runs_on_path(Path::new("src/example.h")));
+        assert!(!limit.runs_on_path(Path::new("src/generated/example.cpp")));
+    }
+
+    #[test]
+    fn config_without_file_limits_remains_valid() {
+        let desc: ConfigDesc =
+            serde_json::from_str(r#"{"roots":[],"includes":[],"excludes":[],"tests":[]}"#).unwrap();
+
+        assert!(Config::from_desc(desc).file_limits.is_empty());
+    }
+
+    #[test]
+    fn examine_reports_distinct_warnings_when_both_limits_are_exceeded() {
+        let desc: ConfigDesc = serde_json::from_str(
+            r#"{
+                "roots": [],
+                "includes": ["\\.cpp$"],
+                "tests": [],
+                "fileLimits": [{
+                    "max_bytes": 5,
+                    "max_lines": 2,
+                    "max_bytes_error": "File has too many bytes",
+                    "max_lines_error": "File has too many lines"
+                }]
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_desc(desc);
+        let path = std::env::temp_dir().join(format!(
+            "acpplinter-file-limit-test-{}.cpp",
+            std::process::id()
+        ));
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+
+        let warnings = async_std::task::block_on(examine(&config, &path, false, false, false));
+        std::fs::remove_file(path).unwrap();
+
+        let byte_warnings = warnings.map.get("File has too many bytes").unwrap();
+        let line_warnings = warnings.map.get("File has too many lines").unwrap();
+        assert_eq!(byte_warnings.len(), 1);
+        assert_eq!(line_warnings.len(), 1);
+        assert_eq!(byte_warnings[0].line, None);
+        assert_eq!(line_warnings[0].line, None);
+    }
 }
