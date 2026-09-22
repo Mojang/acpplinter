@@ -5,6 +5,7 @@ A fast, configurable C++ linter written in Rust that scans source files for code
 ## Features
 
 - **Regex-based rules**: Define custom lint rules using regular expressions
+- **File limits**: Enforce maximum file sizes and line counts
 - **Configurable via JSON**: Easy-to-edit configuration file for rules and paths
 
 ## Installation
@@ -50,6 +51,7 @@ The configuration is a JSON file with the following structure:
   "removeStrings": true,
   "removeComments": true,
   "safeTag": "safe",
+  "fileLimits": [...],
   "tests": [...]
 }
 ```
@@ -64,7 +66,34 @@ The configuration is a JSON file with the following structure:
 | `removeStrings` | `bool` | Strip string literals before linting (default: true) |
 | `removeComments` | `bool` | Strip comments before linting (default: true) |
 | `safeTag` | `string` | Tag to mark code as safe (default: "safe") |
+| `fileLimits` | `object[]` | Optional file size and line-count rules |
 | `tests` | `object[]` | Array of lint rules |
+
+### File Limit Rules
+
+Each file limit rule (`fileLimits`) supports:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `max_bytes` | `number` | Maximum file size in bytes (inclusive) |
+| `max_lines` | `number` | Maximum number of lines (inclusive) |
+| `max_bytes_error` | `string` | Error message when `max_bytes` is exceeded |
+| `max_lines_error` | `string` | Error message when `max_lines` is exceeded |
+| `include_paths` | `string[]` | Only check files matching these patterns |
+| `exclude_paths` | `string[]` | Skip files matching these patterns |
+
+At least one limit and its corresponding error message should be provided. If both limits are exceeded, the rule emits both warnings.
+
+```json
+{
+  "max_bytes": 350000,
+  "max_lines": 10000,
+  "include_paths": ["\\.cpp$", "\\.h$"],
+  "exclude_paths": ["generated"],
+  "max_bytes_error": "Source file is too large",
+  "max_lines_error": "Source file has too many lines"
+}
+```
 
 ### Test Rules
 
